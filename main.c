@@ -38,10 +38,11 @@ void measureVloFrequency();
 #define EXPECTED_SENSES_PER_CYCLE 2
 #define TIMER_CYCLE_PERIOD_S (EXPECTED_SENSE_PERIOD_S * EXPECTED_SENSES_PER_CYCLE)
 #define TIMER_CYCLE_FREQUENCY (uint16_t)(1.0 / TIMER_CYCLE_PERIOD_S)
-// The maximum value of gSenseCount
-#define SENSE_COUNT_SATURATION 20
-// The threshold for determination that we are cleared
-#define SENSE_COUNT_CLEAR_THREASHOLD 18
+// Number of bins we have for storing the last several samples
+#define SENSE_BIN_COUNT 10
+// The clear threshold before marking the sensor as cleared
+#define SENSE_THRESHOLD_PERCENT 90
+#define SENSE_THRESHOLD_COUNT (int16_t)(SENSE_BIN_COUNT * EXPECTED_SENSES_PER_CYCLE * SENSE_THRESHOLD_PERCENT / 100.0 + 0.5)
 
 // Number of seconds clear is sensed before deactivating
 #define IDLE_DEACTIVATION_TIME_S 60
@@ -69,9 +70,6 @@ uint16_t gVloFrequency = 0;
 // Number of times the cleared signal is received
 int16_t gSenseCount = 0;
 
-// Set to true if at least 1 cleared signal received in this cycle
-bool gSense = false;
-
 // Set to true once we are inactive
 bool gInactive = false;
 
@@ -80,6 +78,11 @@ int16_t gClearCount = 0;
 
 // Number of consecutive blocked cycles in inactive state up to MAX_BLOCKED_COUNT
 int16_t gBlockedCount = 0;
+
+// Number of sense signals received in the last several cycles
+int16_t gSenseBins[SENSE_BIN_COUNT] = {0};
+// The current bin to fill
+uint8_t gSenseBinPtr = 0;
 
 /**
  * main.c
@@ -112,7 +115,6 @@ int main(void)
     uint16_t timerValue = gVloFrequency / TIMER_CYCLE_FREQUENCY - 1;
     CCR0 = timerValue;
     CCTL0 = CCIE;               // Enable interrupt
-
 
     __enable_interrupt();
 
@@ -176,23 +178,21 @@ void measureVloFrequency()
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void Timer_A0(void)
 {
-    // If we haven't sensed at all in this cycle, decrement by the number of expected senses per cycle
-    if (!gSense)
+    // Sum up the number of samples in the last several cycles
+    gSenseBins[gSenseBinPtr++] = gSenseCount;
+    gSenseCount = 0;
+    if (gSenseBinPtr >= SENSE_BIN_COUNT)
     {
-        gSenseCount -= EXPECTED_SENSES_PER_CYCLE;
-        if (gSenseCount < 0)
-        {
-            gSenseCount = 0;
-        }
+        gSenseBinPtr = 0;
     }
-    else
+    int16_t totalSenseCount = 0;
+    int8_t i = 0;
+    for (; i < SENSE_BIN_COUNT; ++i)
     {
-        // Clear the sense flag
-        gSense = false;
+        totalSenseCount += gSenseBins[i];
     }
-
     // Check if we are cleared or not
-    if (gSenseCount >= SENSE_COUNT_CLEAR_THREASHOLD)
+    if (totalSenseCount >= SENSE_THRESHOLD_COUNT)
     {
         // Sensor cleared
         if (gClearCount >= MAX_CLEAR_COUNT)
@@ -237,11 +237,6 @@ __interrupt void Port_1(void)
   {
       // low->high sense
       P1IFG &= ~P1_IPIN_SENSE; // Clear interrupt flag
-      gSense = true;
       ++gSenseCount;
-      if (gSenseCount > SENSE_COUNT_SATURATION)
-      {
-          gSenseCount = SENSE_COUNT_SATURATION;
-      }
   }
 }
