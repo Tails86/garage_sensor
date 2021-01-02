@@ -28,10 +28,13 @@
 // True when cleared signal received in this cycle
 bool gSense = false;
 
+// Set to true once we are inactive
+bool gInactive = false;
+
 // Number of consecutive cleared cycles up to MAX_CLEAR_COUNT
 int16_t gClearCount = 0;
 
-// Number of consecutive blocked cycles up to MAX_BLOCKED_COUNT
+// Number of consecutive blocked cycles in inactive state up to MAX_BLOCKED_COUNT
 int16_t gBlockedCount = 0;
 
 /**
@@ -88,26 +91,30 @@ __interrupt void Timer_A0(void)
             // 1 or more minutes have passed since sensors have been cleared
             // Turn off both LEDs
             ALL_OUTPUTS_OFF();
+            gInactive = true;
         }
         else
         {
             ++gClearCount;
             SET_GREEN_LED(true);
             SET_RED_LED(false);
+            gInactive = false;
         }
         gBlockedCount = 0;
     }
     else
     {
-        if (gBlockedCount >= MAX_BLOCKED_COUNT)
+        // Sensor blocked
+        if (!gInactive || gBlockedCount >= MAX_BLOCKED_COUNT)
         {
-            // Sensor blocked
             SET_RED_LED(true);
             SET_GREEN_LED(false);
             gClearCount = 0;
+            gInactive = false;
         }
         else
         {
+            // Inactive, and we haven't reached the number of blocked counts to reactivate yet
             ++gBlockedCount;
         }
     }
