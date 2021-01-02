@@ -46,7 +46,7 @@ void measureVloFrequency();
 
 // Number of seconds clear is sensed before deactivating
 #define IDLE_DEACTIVATION_TIME_S 60
-#define MAX_CLEAR_COUNT (IDLE_DEACTIVATION_TIME_S / TIMER_CYCLE_PERIOD_S)
+#define MAX_CLEAR_COUNT (int16_t)(IDLE_DEACTIVATION_TIME_S / TIMER_CYCLE_PERIOD_S + 0.5)
 
 // Maximum number of VLO measurements before error is flagged
 #define MAX_VLO_MEASUREMENTS 20
@@ -186,10 +186,11 @@ __interrupt void Timer_A0(void)
         gSenseBinPtr = 0;
     }
     int16_t totalSenseCount = 0;
-    int8_t i = 0;
-    for (; i < SENSE_BIN_COUNT; ++i)
+    int8_t i = SENSE_BIN_COUNT;
+    int16_t *pBin = &gSenseBins[0];
+    for (; i > 0; --i, pBin++)
     {
-        totalSenseCount += gSenseBins[i];
+        totalSenseCount += *pBin;
     }
     // Check if we are cleared or not
     if (totalSenseCount >= SENSE_THRESHOLD_COUNT)
