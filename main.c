@@ -1,10 +1,21 @@
 #include <msp430.h> 
 #include <stdint.h>
 #include <stdbool.h>
+// VLO library found on TI website
+// Application Report: https://www.ti.com/lit/an/slaa340a/slaa340a.pdf
+// Library download location: http://www.ti.com/lit/zip/slaa340
+// Refer to the copyright notice in VLO_Library.asm.
+// This library allows me to use the Very Low Oscillator (VLO) with greater timing precision.
+#include "VLO_Library.h"
+
+void measureVloFrequency();
+
+// Define the following to use a more simplified VLO frequency calculation in measureVloFrequency
+// #define USE_SIMPLE_VLO_FREQUENCY_CALC
 
 // Pin definitions
 #define P1_IPIN_SENSE 0x20
-#define P1_OPIN_RED 0x80
+#define P1_OPIN_RED 0x81 // Pin 1.0 for debug, pin 1.7 in application
 #define P1_OPIN_GREEN 0x40
 #define ALL_P1_OUTPUTS_MASK (P1_OPIN_RED | P1_OPIN_GREEN)
 
@@ -14,18 +25,51 @@
 
 // Setter macros
 #define SET_OUTPUT(port, mask, on) (on ? (port |= mask) : (port &= ~mask))
+#define TOGGLE_OUTPUT(port, mask) (port ^= mask)
 #define SET_RED_LED(on) SET_OUTPUT(P1OUT, P1_OPIN_RED, on)
 #define SET_GREEN_LED(on) SET_OUTPUT(P1OUT, P1_OPIN_GREEN, on)
+#define TOGGLE_LEDS() TOGGLE_OUTPUT(P1OUT, P1_OPIN_RED | P1_OPIN_GREEN)
 // All control IO are on port 1
 #define ALL_OUTPUTS_OFF() P1OUT &= ~ALL_P1_OUTPUTS_MASK
 
-// Maximum number of cleared samples before shutting off all LEDs
-#define MAX_CLEAR_COUNT 3000
+// Expected amount of time between each sense
+#define EXPECTED_SENSE_PERIOD_S 0.007
+// The number of senses for each timer cycle
+#define EXPECTED_SENSES_PER_CYCLE 2
+#define TIMER_CYCLE_PERIOD_S (EXPECTED_SENSE_PERIOD_S * EXPECTED_SENSES_PER_CYCLE)
+#define TIMER_CYCLE_FREQUENCY (uint16_t)(1.0 / TIMER_CYCLE_PERIOD_S)
+// The maximum value of gSenseCount
+#define SENSE_COUNT_SATURATION 20
+// The threshold for determination that we are cleared
+#define SENSE_COUNT_CLEAR_THREASHOLD 18
 
-// Maximum number of blocked sampled before activating
-#define MAX_BLOCKED_COUNT 5
+// Number of seconds clear is sensed before deactivating
+#define IDLE_DEACTIVATION_TIME_S 60
+#define MAX_CLEAR_COUNT (IDLE_DEACTIVATION_TIME_S / TIMER_CYCLE_PERIOD_S)
 
-// True when cleared signal received in this cycle
+// Maximum number of VLO measurements before error is flagged
+#define MAX_VLO_MEASUREMENTS 20
+// VLO count +/- tolerance from measurement to measurement
+#define VLO_MEASUREMENT_COUNT_TOL 3
+// Min/max VLO frequencies from specs
+#define MIN_VLO_FREQUENCY 4000
+#define MAX_VLO_FREQUENCY 20000
+// The clock frequency the VLO count is relative to (coded into VLO_Library.asm)
+#define VLO_COUNT_REL_CLOCK_FREQUENCY 8000000
+// Computed min and max VLO counts
+#define MIN_VLO_COUNT (VLO_COUNT_REL_CLOCK_FREQUENCY / MAX_VLO_FREQUENCY)
+#define MAX_VLO_COUNT (VLO_COUNT_REL_CLOCK_FREQUENCY / MIN_VLO_FREQUENCY)
+
+// Maximum number of blocked cycles before activating
+#define MAX_BLOCKED_COUNT 14
+
+// Saves the measured frequency of the VLO
+uint16_t gVloFrequency = 0;
+
+// Number of times the cleared signal is received
+int16_t gSenseCount = 0;
+
+// Set to true if at least 1 cleared signal received in this cycle
 bool gSense = false;
 
 // Set to true once we are inactive
@@ -61,10 +105,14 @@ int main(void)
     // 1.5 low->high interrupt
     P1IE = P1_IPIN_SENSE;
     P1IES = 0;
+    // Measure the frequency of VLO and store into gVloFrequency
+    measureVloFrequency();
     // Timer 0 interrupt
     TA0CTL = TASSEL_1 | MC_1;   // ACLK, up mode
-    CCR0 = 399;                 // Check every 20ms to 100ms (typ=33ms)
+    uint16_t timerValue = gVloFrequency / TIMER_CYCLE_FREQUENCY - 1;
+    CCR0 = timerValue;
     CCTL0 = CCIE;               // Enable interrupt
+
 
     __enable_interrupt();
 
@@ -78,12 +126,73 @@ int main(void)
 	return 0;
 }
 
+void measureVloFrequency()
+{
+    // It seems like it takes some time for the VLO to power up, so give it a moment
+    // 100 ms is probably overkill, but this is only used for startup cal :)
+    __delay_cycles(100000);
+    // Measure and calculate the VLO frequency
+    int vloValue = 0;
+#ifdef USE_SIMPLE_VLO_FREQUENCY_CALC
+    vloValue = TI_measureVLO();
+#else
+    // This will make sure we get at last 2 consistent measurements before moving on
+    // It's probably more overkill, but it doesn't hurt anything besides the need for more program space
+    int lastVloValue = 0;
+    bool isValid = false;
+    uint16_t calculationCount = 0;
+    do
+    {
+        lastVloValue = vloValue;
+        vloValue = TI_measureVLO();
+        isValid = (vloValue >= MIN_VLO_COUNT &&
+                   vloValue <= MAX_VLO_COUNT &&
+                   vloValue <= lastVloValue + VLO_MEASUREMENT_COUNT_TOL &&
+                   vloValue >= lastVloValue - VLO_MEASUREMENT_COUNT_TOL);
+        ++calculationCount;
+    } while (calculationCount < MAX_VLO_MEASUREMENTS && !isValid);
+    // Check if error was detected
+    if (!isValid)
+    {
+        // Flash red/green then go to sleep forever
+        SET_RED_LED(true);
+        SET_GREEN_LED(false);
+        uint8_t i = 20;
+        for (; i > 0; --i)
+        {
+            __delay_cycles(500000);
+            TOGGLE_LEDS();
+        }
+        ALL_OUTPUTS_OFF();
+        LPM4; // Stuck here forever
+        while(1);
+    }
+#endif
+    // Finally, compute the frequency from the count
+    gVloFrequency = VLO_COUNT_REL_CLOCK_FREQUENCY / vloValue;
+}
+
 //Timer ISR
 #pragma vector = TIMER0_A0_VECTOR
 __interrupt void Timer_A0(void)
 {
+    // If we haven't sensed at all in this cycle, decrement by the number of expected senses per cycle
+    if (!gSense)
+    {
+        gSenseCount -= EXPECTED_SENSES_PER_CYCLE;
+        if (gSenseCount < 0)
+        {
+            gSenseCount = 0;
+        }
+    }
+    else
+    {
+        // Clear the sense flag
+        gSense = false;
+    }
+
     // Check if we are cleared or not
-    if (gSense)
+    if (gSenseCount >= SENSE_COUNT_CLEAR_THREASHOLD)
     {
         // Sensor cleared
         if (gClearCount >= MAX_CLEAR_COUNT)
@@ -118,8 +227,6 @@ __interrupt void Timer_A0(void)
             ++gBlockedCount;
         }
     }
-    // Reset flag
-    gSense = false;
 }
 
 // Sense ISR
@@ -131,5 +238,10 @@ __interrupt void Port_1(void)
       // low->high sense
       P1IFG &= ~P1_IPIN_SENSE; // Clear interrupt flag
       gSense = true;
+      ++gSenseCount;
+      if (gSenseCount > SENSE_COUNT_SATURATION)
+      {
+          gSenseCount = SENSE_COUNT_SATURATION;
+      }
   }
 }
