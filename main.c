@@ -35,14 +35,14 @@ void measureVloFrequency();
 // Expected amount of time between each sense
 #define EXPECTED_SENSE_PERIOD_S 0.007
 // The number of senses for each timer cycle
-#define EXPECTED_SENSES_PER_CYCLE 2
-#define TIMER_CYCLE_PERIOD_S (EXPECTED_SENSE_PERIOD_S * EXPECTED_SENSES_PER_CYCLE)
+#define SENSES_PER_CYCLE 3
+#define TIMER_CYCLE_PERIOD_S (EXPECTED_SENSE_PERIOD_S * SENSES_PER_CYCLE)
 #define TIMER_CYCLE_FREQUENCY (uint16_t)(1.0 / TIMER_CYCLE_PERIOD_S)
 // Number of bins we have for storing the last several samples
 #define SENSE_BIN_COUNT 10
 // The clear threshold before marking the sensor as cleared
 #define SENSE_THRESHOLD_PERCENT 90
-#define SENSE_THRESHOLD_COUNT (int16_t)(SENSE_BIN_COUNT * EXPECTED_SENSES_PER_CYCLE * SENSE_THRESHOLD_PERCENT / 100.0 + 0.5)
+#define SENSE_THRESHOLD_COUNT (int16_t)(SENSE_BIN_COUNT * SENSES_PER_CYCLE * SENSE_THRESHOLD_PERCENT / 100.0 + 0.5)
 
 // Number of seconds clear is sensed before deactivating
 #define IDLE_DEACTIVATION_TIME_S 60
